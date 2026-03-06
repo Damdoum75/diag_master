@@ -30,8 +30,8 @@ CORS(app)  # Autorise ton interface React à communiquer avec Python
 CAN_INTERFACE = 'can0'  # Interface CAN (à adapter selon votre configuration)
 CAN_BAUDRATE = 500000  # 500K CAN pour Kia NQ5
 
-# Adresse des calculateurs Kia NQ5
-ECU_ADDRESSES = {
+# Adresse des calculateurs Kia NQ5 (11-bit standard)
+ECU_ADDRESSES_11BIT = {
     'ACU': 0x7B0,    # Airbag Control Unit
     'ILCU': 0x77D,   # Intelligent Lighting Control
     'ADAS': 0x7C6,   # Advanced Driver Assistance
@@ -41,6 +41,32 @@ ECU_ADDRESSES = {
     'BCM': 0x776,    # Body Control Module
     'TCU': 0x7E1     # Transmission Control
 }
+
+# Adresses DoIP 29-bit pour modules hybrides/ADAS (NQ5 2023+)
+# Format: {'name': (tx_id, rx_id, is_extended)}
+ECU_ADDRESSES_29BIT = {
+    'HCU': (0x18DA20F1, 0x18DAF120, True),    # Hybrid Control Unit
+    'BMS': (0x18DA22F1, 0x18DAF221, True),     # Battery Management System
+    'OBC': (0x18DA23F1, 0x18DAF321, True),     # On-Board Charger
+    'IPM': (0x18DA24F1, 0x18DAF421, True),     # Integrated Power Module
+    'MGU': (0x18DA25F1, 0x18DAF521, True),     # Motor Generator Unit
+}
+
+# Alias pour compatibilité
+ECU_ADDRESSES = {**ECU_ADDRESSES_11BIT, **{k: v[0] for k, v in ECU_ADDRESSES_29BIT.items()}}
+
+# Seuils pour la santé des capteurs hybrides
+HYBRID_THRESHOLDS = {
+    'hv_voltage_min': 235,   # 240V ± 5V
+    'hv_voltage_max': 245,
+    'soc_delta_max': 3,      # Écart max entre BMS et HCU (%)
+    'battery_12v_min': 11.5,
+    'battery_12v_max': 14.5
+}
+
+# Variable pour suivre le cycle de repos
+last_dtc_clear_time = None
+require_battery_cycle = False
 
 
 def init_can_connection():
@@ -199,6 +225,76 @@ def check_ifs_angle():
         return jsonify({"status": "ERROR", "msg": str(e)}), 500
 
 
+@app.route('/sensor/hv-battery')
+def check_hv_battery():
+    """
+    Vérifie la tension de la batterie HV (haute tension) 48V système hybride
+    Mode UDS : Read Data By Identifier sur BMS
+    Seuil : 240V ± 5V (235V - 245V)
+    """
+    try:
+        # Simulation - Lecture via UDS sur BMS (0x18DA22F1)
+        val = 240.5  # Volts (tension normale)
+        
+        status = "OK"
+        if val < HYBRID_THRESHOLDS['hv_voltage_min']:
+            status = "LOW"
+        elif val > HYBRID_THRESHOLDS['hv_voltage_max']:
+            status = "HIGH"
+        
+        return jsonify({
+            "status": status,
+            "sensor": "HV Battery Voltage",
+            "value": val,
+            "unit": "V",
+            "threshold": {
+                "min": HYBRID_THRESHOLDS['hv_voltage_min'], 
+                "max": HYBRID_THRESHOLDS['hv_voltage_max']
+            },
+            "ecu": "BMS",
+            "is_extended_id": True,
+            "can_tx": hex(ECU_ADDRESSES_29BIT['BMS'][0]),
+            "can_rx": hex(ECU_ADDRESSES_29BIT['BMS'][1])
+        })
+    except Exception as e:
+        return jsonify({"status": "ERROR", "msg": str(e)}), 500
+
+
+@app.route('/sensor/soc-sync')
+def check_soc_synchronization():
+    """
+    Vérifie la synchronisation SOC (State of Charge) entre BMS et HCU
+    Si l'écart > 3%, il y a un problème de synchronisation
+    """
+    try:
+        # Simulation - Lecture SOC depuis BMS et HCU
+        soc_bms = 72  # State of Charge BMS
+        soc_hcu = 74  # State of Charge HCU
+        delta = abs(soc_bms - soc_hcu)
+        
+        if delta > HYBRID_THRESHOLDS['soc_delta_max']:
+            status = "DESYNC"
+            msg = f"Écart {delta}% - Désynchronisation détectée entre BMS et HCU"
+        else:
+            status = "OK"
+            msg = "Synchronisation BMS-HCU normale"
+        
+        return jsonify({
+            "status": status,
+            "sensor": "SOC BMS vs HCU Sync",
+            "soc_bms": soc_bms,
+            "soc_hcu": soc_hcu,
+            "delta": delta,
+            "unit": "%",
+            "threshold": {"max": HYBRID_THRESHOLDS['soc_delta_max']},
+            "ecu": "BMS/HCU",
+            "message": msg,
+            "is_extended_id": True
+        })
+    except Exception as e:
+        return jsonify({"status": "ERROR", "msg": str(e)}), 500
+
+
 @app.route('/sensor/all', methods=['GET'])
 def get_all_sensors():
     """
@@ -234,6 +330,20 @@ def get_all_sensors():
     except:
         pass
     
+    # HV Battery (hybride)
+    try:
+        hv = check_hv_battery().get_json()
+        sensors.append(hv)
+    except:
+        pass
+    
+    # SOC Sync (hybride)
+    try:
+        soc = check_soc_synchronization().get_json()
+        sensors.append(soc)
+    except:
+        pass
+    
     return jsonify({
         "timestamp": time.time(),
         "sensors_count": len(sensors),
@@ -243,13 +353,31 @@ def get_all_sensors():
 
 @app.route('/ecu/list')
 def list_ecu():
-    """Liste les calculateurs disponibles"""
-    return jsonify({
-        "ecus": [
-            {"id": k, "address": hex(v), "name": k} 
-            for k, v in ECU_ADDRESSES.items()
-        ]
-    })
+    """Liste les calculateurs disponibles avec adresses 11-bit et 29-bit"""
+    ecus = []
+    
+    # Add 11-bit ECUs
+    for name, addr in ECU_ADDRESSES_11BIT.items():
+        ecus.append({
+            "id": name,
+            "address": hex(addr),
+            "name": name,
+            "is_extended": False,
+            "type": "STANDARD"
+        })
+    
+    # Add 29-bit ECUs (DoIP)
+    for name, (tx, rx, ext) in ECU_ADDRESSES_29BIT.items():
+        ecus.append({
+            "id": name,
+            "tx_address": hex(tx),
+            "rx_address": hex(rx),
+            "name": name,
+            "is_extended": ext,
+            "type": "DOIP"
+        })
+    
+    return jsonify({"ecus": ecus})
 
 
 @app.route('/ecu/<ecu_id>/dtc')
@@ -283,13 +411,35 @@ def clear_ecu_dtc(ecu_id):
     """
     Efface les DTC d'un calculateur
     Mode UDS : Clear Diagnostic Information (0x14)
+    
+    Note importante pour les modules hybrides (HCU/BMS) :
+    L'effacement n'est pas effectif sans un cycle de repos de la batterie 12V.
     """
+    global last_dtc_clear_time, require_battery_cycle
+    
     if ecu_id.upper() not in ECU_ADDRESSES:
         return jsonify({"status": "ERROR", "msg": "ECU inconnu"}), 400
     
     try:
         # Simulation - Effacement réel via UDS
         # udsoncan.commands.ClearDtc(session)
+        
+        # Enregistrer le temps d'effacement
+        last_dtc_clear_time = time.time()
+        
+        # Pour les modules hybrides, exiger un cycle de batterie
+        hybrid_modules = ['HCU', 'BMS', 'MHEV', 'OBC', 'IPM', 'MGU']
+        if ecu_id.upper() in hybrid_modules:
+            require_battery_cycle = True
+            return jsonify({
+                "status": "OK",
+                "message": f"DTC effacés pour {ecu_id}",
+                "ecu": ecu_id,
+                "warning": "KGD_REQUIRED",
+                "kgd_message": "Action requise : Débranchez la batterie 12V pendant 10 min pour valider l'auto-test du HCU/BMS.",
+                "next_action": "RECONNECT_BATTERY",
+                "timeout_seconds": 600
+            })
         
         return jsonify({
             "status": "OK",
@@ -298,6 +448,44 @@ def clear_ecu_dtc(ecu_id):
         })
     except Exception as e:
         return jsonify({"status": "ERROR", "msg": str(e)}), 500
+
+
+@app.route('/battery/cycle-status')
+def get_battery_cycle_status():
+    """
+    Retourne le statut du cycle de batterie après effacement DTC
+    Indique si un cycle de batterie est requis et le temps restant
+    """
+    global last_dtc_clear_time, require_battery_cycle
+    
+    if not require_battery_cycle or last_dtc_clear_time is None:
+        return jsonify({
+            "status": "IDLE",
+            "require_cycle": False,
+            "message": "Aucun cycle de batterie requis"
+        })
+    
+    elapsed = time.time() - last_dtc_clear_time
+    remaining = max(0, 600 - elapsed)  # 10 minutes = 600 secondes
+    
+    if elapsed >= 600:
+        # Le cycle est complet
+        require_battery_cycle = False
+        return jsonify({
+            "status": "COMPLETE",
+            "require_cycle": False,
+            "message": "Cycle de batterie terminé - Vous pouvez effectuer un nouveau scan",
+            "elapsed_seconds": int(elapsed)
+        })
+    
+    return jsonify({
+        "status": "WAITING",
+        "require_cycle": True,
+        "message": f"Attente du cycle de batterie : {int(remaining)} secondes restantes",
+        "remaining_seconds": int(remaining),
+        "elapsed_seconds": int(elapsed),
+        "instruction": "Débranchez la batterie 12V pendant 10 minutes, puis rebranchez-la"
+    })
 
 
 @app.route('/diagnose/full', methods=['POST'])
