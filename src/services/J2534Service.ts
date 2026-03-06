@@ -320,6 +320,45 @@ export class J2534Service {
   }
 
   /**
+   * Appelle l'agent Python pour les données avancées des capteurs
+   * via le serveur Flask local sur le port 5000
+   */
+  async getAdvancedSensorData() {
+    try {
+      const response = await fetch('http://localhost:5000/sensor/all');
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      this.log("Données avancées des capteurs récupérées", "success");
+      return data;
+    } catch (error: any) {
+      this.log("Impossible de récupérer les données avancées: " + error.message, "error");
+      return null;
+    }
+  }
+
+  /**
+   * Appelle l'agent Python pour le diagnostic complet
+   */
+  async getFullDiagnosis() {
+    try {
+      const response = await fetch('http://localhost:5000/diagnose/full', {
+        method: 'POST'
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      this.log("Diagnostic complet récupéré", "success");
+      return data;
+    } catch (error: any) {
+      this.log("Impossible de récupérer le diagnostic: " + error.message, "error");
+      return null;
+    }
+  }
+
+  /**
    * Méthode pour envoyer la trame brute
    */
   private async sendDiagnosticCommand(ecuId: string, hexCommand: string) {
