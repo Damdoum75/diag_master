@@ -1,0 +1,22 @@
+{
+    "U5YPV81BA": {
+        "source": "NHTSA Global Search",
+        "vinPrefix": "U5YPV81BA",
+        "Suggested VIN": "U5YPV81B!",
+        "Error Code": "6,8,11,400",
+        "Additional Error Text": "Invalid character(s): 9:A.",
+        "Error Text": "6 - Incomplete VIN; 8 - No detailed data available currently; 11 - Incorrect Model Year - Position 10 does not match valid model year codes (I, O, Q, U, Z, 0). Decoded data may not be accurate.; 400 - Invalid Characters Present",
+        "Vehicle Descriptor": "U5YPV81B***",
+        "Manufacturer Name": "HYUNDAI-KIA AMERICA TECHNICAL CENTER INC (HATCI)",
+        "Vehicle Type": "PASSENGER CAR",
+        "Bed Type": "Not Applicable",
+        "Cab Type": "Not Applicable",
+        "Trailer Type Connection": "Not Applicable",
+        "Trailer Body Type": "Not Applicable",
+        "Custom Motorcycle Type": "Not Applicable",
+        "Motorcycle Suspension Type": "Not Applicable",
+        "Motorcycle Chassis Type": "Not Applicable",
+        "Bus Floor Configuration Type": "Not Applicable",
+        "Bus Type": "Not Applicable"
+    }
+}

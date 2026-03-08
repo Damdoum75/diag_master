@@ -1,5 +1,7 @@
-import { Brain, Link, ChevronRight, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Brain, Link, ChevronRight, AlertTriangle, CheckCircle2, Sparkles, Loader2 } from "lucide-react";
 import { KNOWN_ISSUES_NQ5, DTC_DATABASE } from "./dtcDatabase";
+import { getExpertAdvice, ExpertAdvice } from "@/services/AutoWizardService";
+import { useState } from "react";
 
 interface AIAnalysisProps {
   detectedCodes: string[];

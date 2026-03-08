@@ -18,6 +18,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 import logging
 import time
+import requests
 
 # Configuration du logging
 logging.basicConfig(level=logging.INFO)
@@ -96,6 +97,10 @@ def get_can_bus():
     return can_bus
 
 
+# URL de l'API AutoWizard (doit être démarrée séparément)
+AUTOWIZARD_URL = "http://localhost:8080/api/DTCCode"
+
+
 @app.route('/health')
 def health_check():
     """Vérification que le serveur est vivant"""
@@ -105,6 +110,92 @@ def health_check():
         "version": "1.0.0",
         "timestamp": time.time()
     })
+
+
+@app.route('/api/expert/<dtc>', methods=['GET'])
+def get_expert_advice(dtc):
+    """
+    Endpoint qui fait le pont entre le scanneur (ELM/J2534) 
+    et la base de connaissances AutoWizard.
+    
+    Retourne les informations détaillées sur le DTC :
+    - definition: description du code
+    - suggested_fix: solution recommandée
+    - severity: niveau de gravité
+    - possible_causes: causes possibles
+    """
+    dtc = dtc.upper().strip()
+    print(f"📡 Requête Expert pour DTC: {dtc}")
+    
+    try:
+        # On interroge l'API locale AutoWizard
+        response = requests.get(f"{AUTOWIZARD_URL}/{dtc}", timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
+            # Transformer la réponse AutoWizard en format standard
+            return jsonify({
+                "code": dtc,
+                "definition": data.get("description", "Description non disponible"),
+                "suggested_fix": data.get("solutions", "Solution non disponible"),
+                "possible_causes": data.get("possibleCauses", "").split(", ") if data.get("possibleCauses") else [],
+                "severity": _estimate_severity(dtc),
+                "source": "AutoWizard"
+            })
+        elif response.status_code == 404:
+            # Code non trouvé dans AutoWizard, utiliser la base locale
+            return jsonify({
+                "code": dtc,
+                "definition": "Code détecté via J2534/ELM327",
+                "suggested_fix": "Vérification manuelle requise - Consultez la documentation KIA",
+                "possible_causes": ["Informations non disponibles dans la base AutoWizard"],
+                "severity": _estimate_severity(dtc),
+                "source": "local"
+            })
+        else:
+            return jsonify({
+                "code": dtc,
+                "definition": "Erreur de communication avec AutoWizard",
+                "suggested_fix": "Vérification manuelle requise",
+                "possible_causes": ["Service AutoWizard temporairement indisponible"],
+                "severity": "medium",
+                "error": f"Status: {response.status_code}"
+            }), 500
+            
+    except requests.exceptions.ConnectionError:
+        # AutoWizard pas démarré, retourner une réponse de fallback
+        return jsonify({
+            "code": dtc,
+            "definition": "Service AutoWizard non disponible",
+            "suggested_fix": "Vérification manuelle requise - Lancez l'API AutoWizard sur le port 8080",
+            "possible_causes": ["AutoWizardAPI non démarré"],
+            "severity": _estimate_severity(dtc),
+            "source": "fallback"
+        })
+    except Exception as e:
+        print(f"❌ Erreur AutoWizard: {e}")
+        return jsonify({
+            "code": dtc,
+            "definition": "Erreur lors de la requête",
+            "suggested_fix": "Vérification manuelle requise",
+            "possible_causes": [str(e)],
+            "severity": "medium",
+            "error": str(e)
+        }), 500
+
+
+def _estimate_severity(dtc: str) -> str:
+    """Estime la gravité du DTC basée sur son préfixe"""
+    prefix = dtc[:1].upper() if dtc else ""
+    
+    severity_map = {
+        'P': 'high',   # Powertrain - souvent critique
+        'B': 'medium',  # Body - airbags, clim
+        'C': 'medium',  # Chassis - ABS, direction
+        'U': 'low'      # Network - erreurs de communication
+    }
+    
+    return severity_map.get(prefix, 'medium')
 
 
 @app.route('/sensor/crash-continuity')
