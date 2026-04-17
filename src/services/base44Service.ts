@@ -1,4 +1,4 @@
-﻿import { base44 } from '@/api/base44Client'
+import { base44 } from '@/api/base44Client'
 
 export interface DiagnosticSession {
   id?: string
@@ -31,14 +31,12 @@ export interface DiagnosticSession {
 }
 
 export class Base44Service {
-  private appId = '69a82acd6ad3c4743cafe6c4'
   private apiKey = import.meta.env.VITE_API_KEY || ''
+  private baseUrl = `${base44.serverUrl}/api/apps/${base44.appId}/entities/DiagnosticSession`
 
   async fetchDiagnosticSessions(filters?: Record<string, any>): Promise<DiagnosticSession[]> {
     try {
-      const url = new URL(
-        \https://app.base44.com/api/apps/\/entities/DiagnosticSession\
-      )
+      const url = new URL(this.baseUrl)
 
       if (filters) {
         Object.entries(filters).forEach(([key, value]) => {
@@ -54,7 +52,7 @@ export class Base44Service {
       })
 
       if (!response.ok) {
-        throw new Error(\HTTP \\)
+        throw new Error(`HTTP error! status: ${response.status}`)
       }
 
       const data = await response.json()
@@ -67,20 +65,17 @@ export class Base44Service {
 
   async createDiagnosticSession(session: Partial<DiagnosticSession>): Promise<DiagnosticSession | null> {
     try {
-      const response = await fetch(
-        \https://app.base44.com/api/apps/\/entities/DiagnosticSession\,
-        {
-          method: 'POST',
-          headers: {
-            'api_key': this.apiKey,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(session),
-        }
-      )
+      const response = await fetch(this.baseUrl, {
+        method: 'POST',
+        headers: {
+          'api_key': this.apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(session),
+      })
 
       if (!response.ok) {
-        throw new Error(\HTTP \\)
+        throw new Error(`HTTP error! status: ${response.status}`)
       }
 
       return await response.json()
@@ -95,20 +90,17 @@ export class Base44Service {
     updates: Partial<DiagnosticSession>
   ): Promise<DiagnosticSession | null> {
     try {
-      const response = await fetch(
-        \https://app.base44.com/api/apps/\/entities/DiagnosticSession/\\,
-        {
-          method: 'PUT',
-          headers: {
-            'api_key': this.apiKey,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(updates),
-        }
-      )
+      const response = await fetch(`${this.baseUrl}/${encodeURIComponent(sessionId)}`, {
+        method: 'PUT',
+        headers: {
+          'api_key': this.apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(updates),
+      })
 
       if (!response.ok) {
-        throw new Error(\HTTP \\)
+        throw new Error(`HTTP error! status: ${response.status}`)
       }
 
       return await response.json()

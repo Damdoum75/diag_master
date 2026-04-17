@@ -16,6 +16,19 @@
  */
 
 export class J2534Service {
+  ws: WebSocket | null
+  isConnected: boolean
+  onLog: ((msg: string, type?: string) => void) | null
+  channelId: number | null
+  deviceId: number | null
+  pendingRequests: Map<number, { resolve: (value: any) => void; reject: (reason: any) => void }>
+  requestId: number
+  bridgeUrl: string
+  protocol: string
+  connFlags: number
+  baudrate: number
+  knownModules: Array<{ name: string; txId: number; rxId: number }>
+
   constructor() {
     this.ws = null;
     this.isConnected = false;
@@ -28,6 +41,16 @@ export class J2534Service {
     this.protocol = "ISO15765"; // CAN 11bit 500K
     this.connFlags = 0x00000000;
     this.baudrate = 500000; // 500K CAN
+    this.knownModules = [
+      { name: "ECM", txId: 0x7E0, rxId: 0x7E8 },
+      { name: "TCU", txId: 0x7E1, rxId: 0x7E9 },
+      { name: "MHEV", txId: 0x7E4, rxId: 0x7EC },
+      { name: "ABS", txId: 0x760, rxId: 0x768 },
+      { name: "BCM", txId: 0x776, rxId: 0x77E },
+      { name: "ILCU", txId: 0x77D, rxId: 0x785 },
+      { name: "ACU", txId: 0x7B0, rxId: 0x7B8 },
+      { name: "ADAS", txId: 0x7C6, rxId: 0x7CE }
+    ];
   }
 
   isSupported() {
@@ -84,7 +107,7 @@ export class J2534Service {
     });
   }
 
-  async _send(method, params = {}) {
+  async _send(method: string, params: Record<string, any> = {}): Promise<any> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error("Bridge J2534 non connecté");
     }
@@ -141,7 +164,7 @@ export class J2534Service {
 
   async _sendOBD(txId, rxId, data) {
     // Envoi d'une trame ISO15765
-    const result = await this._send("PassThruWriteRead", {
+    const result: any = await this._send("PassThruWriteRead", {
       ChannelID: this.channelId,
       TxMessages: [{
         ProtocolID: 6,
@@ -156,6 +179,22 @@ export class J2534Service {
   }
 
   async scanModule(moduleAddress, testerAddress = "7DF") {
+    const resolved = this._resolveModuleAddress(moduleAddress);
+    if (resolved) {
+      const { txId, rxId } = resolved;
+      try {
+        const dtcs = await this._readDtcs(txId, rxId);
+        return {
+          dtcs,
+          status: dtcs.length > 0 ? "fault" : "ok",
+          responseTime: 120
+        };
+      } catch (e) {
+        this.log(`Module ${moduleAddress}: ${e.message}`, "warn");
+        return { dtcs: [], status: "timeout", responseTime: 0 };
+      }
+    }
+
     const rxId = parseInt(moduleAddress, 16) + 8; // Convention réponse ECU
     try {
       // Mode 03: Lire DTCs stockés
@@ -169,6 +208,35 @@ export class J2534Service {
       this.log(`Module ${moduleAddress}: ${e.message}`, "warn");
       return { dtcs: [], status: "timeout", responseTime: 0 };
     }
+  }
+
+  async scanAllModules() {
+    const results = [];
+    for (const mod of this.knownModules) {
+      const startedAt = Date.now();
+      try {
+        const dtcs = await this._readDtcs(mod.txId, mod.rxId);
+        results.push({
+          module: mod.name,
+          txId: mod.txId,
+          rxId: mod.rxId,
+          dtcs,
+          status: dtcs.length > 0 ? "fault" : "ok",
+          responseTime: Date.now() - startedAt
+        });
+      } catch (e) {
+        results.push({
+          module: mod.name,
+          txId: mod.txId,
+          rxId: mod.rxId,
+          dtcs: [],
+          status: "timeout",
+          responseTime: Date.now() - startedAt,
+          error: e?.message || String(e)
+        });
+      }
+    }
+    return results;
   }
 
   _parseDTCs(raw) {
@@ -186,8 +254,82 @@ export class J2534Service {
     return dtcs;
   }
 
-  async readLiveData() {
-    const data = {};
+  _resolveModuleAddress(moduleAddress) {
+    if (!moduleAddress) return null;
+    const key = String(moduleAddress).trim().toUpperCase();
+    const byName = this.knownModules.find(m => m.name === key);
+    if (byName) return byName;
+    const parsed = parseInt(key, 16);
+    if (!Number.isFinite(parsed)) return null;
+    return { name: key, txId: parsed, rxId: parsed + 8 };
+  }
+
+  async _readDtcs(txId, rxId) {
+    const uds = await this._tryReadUdsDtcs(txId, rxId);
+    if (uds && uds.length > 0) return uds;
+    if (uds && uds.length === 0) return [];
+    const raw = await this._sendOBD(txId, rxId, "0300");
+    return this._parseDTCs(raw);
+  }
+
+  async _tryReadUdsDtcs(txId, rxId) {
+    try {
+      const raw = await this._sendOBD(txId, rxId, "1902FF");
+      const hex = (raw || "").replace(/\s/g, "").toUpperCase();
+      if (!hex) return null;
+      if (hex.startsWith("7F19")) return null;
+      return this._parseUdsDtcReport(hex);
+    } catch {
+      return null;
+    }
+  }
+
+  _parseUdsDtcReport(hex) {
+    const bytes = this._hexToBytes(hex);
+    const idx = this._findSubArray(bytes, [0x59, 0x02]);
+    if (idx < 0) return [];
+    const recordsStart = idx + 6;
+    const dtcs = [];
+    for (let i = recordsStart; i + 3 < bytes.length; i += 4) {
+      const b1 = bytes[i];
+      const b2 = bytes[i + 1];
+      const b3 = bytes[i + 2];
+      if (b1 === 0 && b2 === 0 && b3 === 0) continue;
+      dtcs.push(this._dtc3ToHyundaiKiaCode(b1, b2, b3));
+    }
+    return dtcs.filter(Boolean);
+  }
+
+  _dtc3ToHyundaiKiaCode(b1, b2, b3) {
+    const type = (b1 >> 6) & 0x03;
+    const prefix = ["P", "C", "B", "U"][type] || "U";
+    const base = (((b1 & 0x3F) << 8) | b2).toString(16).toUpperCase().padStart(4, "0");
+    const ext = (b3 ?? 0).toString(16).toUpperCase().padStart(2, "0");
+    return `${prefix}${base}${ext}`;
+  }
+
+  _hexToBytes(hex) {
+    const clean = String(hex || "").replace(/[^0-9a-fA-F]/g, "");
+    const out = [];
+    for (let i = 0; i + 1 < clean.length; i += 2) {
+      out.push(parseInt(clean.slice(i, i + 2), 16));
+    }
+    return out;
+  }
+
+  _findSubArray(haystack, needle) {
+    if (!haystack?.length || !needle?.length) return -1;
+    outer: for (let i = 0; i <= haystack.length - needle.length; i++) {
+      for (let j = 0; j < needle.length; j++) {
+        if (haystack[i + j] !== needle[j]) continue outer;
+      }
+      return i;
+    }
+    return -1;
+  }
+
+  async readLiveData(): Promise<Record<string, any>> {
+    const data: Record<string, any> = {};
     const pids = [
       { cmd: "0142", parse: h => parseFloat((parseInt(h, 16) / 1000).toFixed(2)), key: "battery_12v" },
       { cmd: "010C", parse: h => Math.round(parseInt(h, 16) / 4), key: "rpm" },
@@ -391,6 +533,9 @@ export class J2534Service {
  * Simulateur J2534 pour tests sans matériel
  */
 export class J2534Simulator {
+  isConnected: boolean
+  onLog: ((msg: string, type?: string) => void) | null
+
   constructor() {
     this.isConnected = false;
     this.onLog = null;

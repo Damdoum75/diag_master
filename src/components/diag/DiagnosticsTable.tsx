@@ -1,14 +1,25 @@
-﻿import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { AlertCircle, CheckCircle2, Zap } from 'lucide-react'
-import { DTC_DATABASE, MODULE_LIST } from '@/components/diag/dtcDatabase'
+import { DTC_DATABASE } from '@/components/diag/dtcDatabase'
+
+type ModuleScanResult = {
+  module: string
+  txId?: number
+  rxId?: number
+  dtcs: string[]
+  status?: 'ok' | 'fault' | 'timeout'
+  responseTime?: number
+  error?: string
+}
 
 interface DiagnosticsTableProps {
   dtcs: string[]
   liveData: Record<string, any>
+  moduleResults?: ModuleScanResult[]
 }
 
-export default function DiagnosticsTable({ dtcs, liveData }: DiagnosticsTableProps) {
+export default function DiagnosticsTable({ dtcs, liveData, moduleResults = [] }: DiagnosticsTableProps) {
   const getSeverityColor = (severity: string) => {
     switch (severity) {
       case 'critical':
@@ -20,6 +31,29 @@ export default function DiagnosticsTable({ dtcs, liveData }: DiagnosticsTablePro
       default:
         return 'bg-blue-500/20 text-blue-400 border-blue-500/50'
     }
+  }
+
+  const getModuleStatus = (r: ModuleScanResult) => {
+    if (r.status) return r.status
+    return r.dtcs?.length > 0 ? 'fault' : 'ok'
+  }
+
+  const getModuleBadgeClass = (status: 'ok' | 'fault' | 'timeout') => {
+    switch (status) {
+      case 'ok':
+        return 'bg-green-500/20 text-green-400 border-green-500/50'
+      case 'fault':
+        return 'bg-orange-500/20 text-orange-400 border-orange-500/50'
+      default:
+        return 'bg-red-500/20 text-red-400 border-red-500/50'
+    }
+  }
+
+  const getModuleLabel = (r: ModuleScanResult) => {
+    const status = getModuleStatus(r)
+    if (status === 'timeout') return 'TIMEOUT'
+    if (status === 'fault') return 'DÉFAUT'
+    return 'OK'
   }
 
   return (
@@ -45,6 +79,46 @@ export default function DiagnosticsTable({ dtcs, liveData }: DiagnosticsTablePro
           </div>
         </CardContent>
       </Card>
+
+      {moduleResults.length > 0 && (
+        <Card className="bg-slate-800 border-slate-700">
+          <CardHeader>
+            <CardTitle className="text-white">Présence calculateurs</CardTitle>
+            <CardDescription>OK / défaut / timeout par ECU</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {moduleResults.map((r) => {
+                const status = getModuleStatus(r)
+                const tx = typeof r.txId === 'number' ? `0x${r.txId.toString(16).toUpperCase()}` : null
+                const rx = typeof r.rxId === 'number' ? `0x${r.rxId.toString(16).toUpperCase()}` : null
+                const addr = tx && rx ? `${tx} → ${rx}` : tx ? tx : null
+                return (
+                  <div
+                    key={`${r.module}-${tx || ''}`}
+                    className="p-3 bg-slate-700/40 rounded-lg border border-slate-600 flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-white font-semibold">{r.module}</div>
+                      <div className="text-xs text-slate-400 truncate">
+                        {addr || (r.responseTime ? `${r.responseTime} ms` : '')}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {typeof r.responseTime === 'number' && (
+                        <span className="text-xs text-slate-400">{r.responseTime} ms</span>
+                      )}
+                      <Badge variant="outline" className={getModuleBadgeClass(status)}>
+                        {getModuleLabel(r)}
+                      </Badge>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* DTCs Found */}
       <Card className="bg-slate-800 border-slate-700">

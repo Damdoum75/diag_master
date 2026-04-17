@@ -1,4 +1,4 @@
-﻿
+
 import { useState, useEffect } from 'react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -20,6 +20,7 @@ export default function Dashboard() {
   const [isConnected, setIsConnected] = useState(false)
   const [useSimulator, setUseSimulator] = useState(true)
   const [dtcs, setDtcs] = useState<string[]>([])
+  const [moduleResults, setModuleResults] = useState<any[]>([])
   const [liveData, setLiveData] = useState<Record<string, any>>({})
   const [logs, setLogs] = useState<Array<{ msg: string; type: string }>>([])
   const [scanning, setScanning] = useState(false)
@@ -54,25 +55,55 @@ export default function Dashboard() {
     try {
       const service = connectionMethod === 'elm327' ? elm327 : j2534
       const allDtcs: string[] = []
-      
-      // Scan all modules
-      const modules = ['ACU', 'ILCU', 'ADAS', 'MHEV', 'ECM', 'ABS', 'BCM', 'TCU']
-      for (const module of modules) {
-        addLog("Scan du module " + module + "...", 'info')
-        const result = await service.scanModule(module)
-        if (result.dtcs && result.dtcs.length > 0) {
-          allDtcs.push(...result.dtcs)
-          addLog(module + ": " + result.dtcs.join(', '), 'warn')
-        } else {
-          addLog(module + ": OK", 'success')
+
+      if (connectionMethod === 'j2534' && typeof (service as any).scanAllModules === 'function') {
+        addLog("Scan J2534 (UDS) des calculateurs Kia NQ5...", 'info')
+        const results = await (service as any).scanAllModules()
+        setModuleResults(results)
+        for (const r of results) {
+          const name = r.module || 'ECU'
+          const prefix = typeof r.txId === 'number' ? `0x${r.txId.toString(16).toUpperCase()}` : ''
+          addLog(`Scan ${name} ${prefix}...`, 'info')
+          if (r.dtcs && r.dtcs.length > 0) {
+            allDtcs.push(...r.dtcs)
+            addLog(`${name}: ${r.dtcs.join(', ')}`, 'warn')
+          } else if (r.status === 'timeout') {
+            addLog(`${name}: timeout (pas de réponse)`, 'warn')
+          } else {
+            addLog(`${name}: OK`, 'success')
+          }
         }
+      } else {
+        const modules = ['ACU', 'ILCU', 'ADAS', 'MHEV', 'ECM', 'ABS', 'BCM', 'TCU']
+        const results: any[] = []
+        for (const module of modules) {
+          addLog("Scan du module " + module + "...", 'info')
+          const result = await (service as any).scanModule(module)
+          const dtcList = Array.isArray(result) ? result : (result?.dtcs || [])
+          const status = Array.isArray(result)
+            ? (dtcList.length > 0 ? 'fault' : 'ok')
+            : (result?.status || (dtcList.length > 0 ? 'fault' : 'ok'))
+          results.push({
+            module,
+            dtcs: dtcList,
+            status,
+            responseTime: Array.isArray(result) ? undefined : result?.responseTime
+          })
+          if (dtcList.length > 0) {
+            allDtcs.push(...dtcList)
+            addLog(module + ": " + dtcList.join(', '), 'warn')
+          } else {
+            addLog(module + ": OK", 'success')
+          }
+        }
+        setModuleResults(results)
       }
       
       setDtcs(allDtcs)
       
       // Read live data
       addLog('Lecture des données en direct...', 'info')
-      const data = await service.readLiveData()
+      const data = await (service as any).readLiveData()
       setLiveData(data)
       addLog('Données en direct récupérées', 'success')
       
@@ -90,6 +121,7 @@ export default function Dashboard() {
       await service.disconnect()
       setIsConnected(false)
       setDtcs([])
+      setModuleResults([])
       setLiveData({})
       addLog('Déconnecté', 'info')
     } catch (error: any) {
@@ -251,7 +283,7 @@ export default function Dashboard() {
 
           {/* Results Tab */}
           <TabsContent value="results" className="space-y-4">
-            <DiagnosticsTable dtcs={dtcs} liveData={liveData} />
+            <DiagnosticsTable dtcs={dtcs} liveData={liveData} moduleResults={moduleResults} />
           </TabsContent>
 
           {/* Analysis Tab */}
@@ -352,5 +384,3 @@ export default function Dashboard() {
     </div>
   )
 }
-
-

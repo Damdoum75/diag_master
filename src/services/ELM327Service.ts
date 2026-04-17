@@ -1,5 +1,14 @@
 // Web Serial API Service - ELM327 USB Communication
 export class ELM327Service {
+  port: any
+  reader: any
+  writer: any
+  isConnected: boolean
+  baudrate: number
+  protocol: string
+  onLog: ((msg: string, type?: string) => void) | null
+  responseBuffer: string
+
   constructor() {
     this.port = null;
     this.reader = null;
@@ -22,7 +31,7 @@ export class ELM327Service {
   async connect(baudrate = 115200) {
     if (!this.isSupported()) throw new Error("Web Serial API non supportée. Utilisez Chrome/Edge.");
     this.baudrate = baudrate;
-    this.port = await navigator.serial.requestPort();
+    this.port = await (navigator as any).serial.requestPort();
     await this.port.open({ baudRate: baudrate, dataBits: 8, stopBits: 1, parity: "none" });
     const decoder = new TextDecoderStream();
     this.port.readable.pipeTo(decoder.writable);
@@ -94,8 +103,8 @@ export class ELM327Service {
     return dtcs;
   }
 
-  async readLiveData() {
-    const data = {};
+  async readLiveData(): Promise<Record<string, any>> {
+    const data: Record<string, any> = {};
     try {
       // Battery 12V (PID 0142)
       const volt12 = await this.sendCommand("0142");
@@ -217,6 +226,9 @@ export class ELM327Service {
 
 // Simulate mode for demo when no hardware
 export class ELM327Simulator {
+  isConnected: boolean
+  onLog: ((msg: string, type?: string) => void) | null
+
   constructor() {
     this.isConnected = false;
     this.onLog = null;
