@@ -136,7 +136,7 @@ static class Program
       var dllPath = ResolveDllPath(name);
       _j2534 = new J2534Native(dllPath);
 
-      var deviceId = _j2534.PassThruOpen();
+      var deviceId = _j2534.PassThruOpen(string.Equals(name, "auto", StringComparison.OrdinalIgnoreCase) ? null : name);
       return new { DeviceID = deviceId };
     }
 
@@ -411,6 +411,7 @@ static class Program
     }
 
     private readonly nint _lib;
+    private readonly string _dllPath;
 
     private readonly PassThruOpenDelegate _open;
     private readonly PassThruCloseDelegate _close;
@@ -420,9 +421,11 @@ static class Program
     private readonly PassThruReadMsgsDelegate _readMsgs;
     private readonly PassThruStartMsgFilterDelegate _startFilter;
     private readonly PassThruIoctlDelegate _ioctl;
+    private readonly PassThruGetLastErrorDelegate? _getLastError;
 
     public J2534Native(string dllPath)
     {
+      _dllPath = dllPath;
       _lib = NativeLibrary.Load(dllPath);
       _open = Get<PassThruOpenDelegate>("PassThruOpen");
       _close = Get<PassThruCloseDelegate>("PassThruClose");
@@ -432,13 +435,32 @@ static class Program
       _readMsgs = Get<PassThruReadMsgsDelegate>("PassThruReadMsgs");
       _startFilter = Get<PassThruStartMsgFilterDelegate>("PassThruStartMsgFilter");
       _ioctl = Get<PassThruIoctlDelegate>("PassThruIoctl");
+      _getLastError = TryGet<PassThruGetLastErrorDelegate>("PassThruGetLastError");
     }
 
-    public uint PassThruOpen()
+    public uint PassThruOpen(string? name = null)
     {
       uint deviceId = 0;
-      var status = _open(nint.Zero, ref deviceId);
-      EnsureNoError(status, "PassThruOpen");
+      var suggested = name;
+      if (string.IsNullOrWhiteSpace(suggested) && _dllPath.IndexOf("GODIAG", StringComparison.OrdinalIgnoreCase) >= 0)
+      {
+        suggested = "GODIAG";
+      }
+
+      nint pName = nint.Zero;
+      try
+      {
+        if (!string.IsNullOrWhiteSpace(suggested))
+        {
+          pName = Marshal.StringToHGlobalAnsi(suggested);
+        }
+        var status = _open(pName, ref deviceId);
+        EnsureNoError(status, "PassThruOpen");
+      }
+      finally
+      {
+        if (pName != nint.Zero) Marshal.FreeHGlobal(pName);
+      }
       return deviceId;
     }
 
@@ -594,10 +616,45 @@ static class Program
       return Marshal.GetDelegateForFunctionPointer<T>(ptr);
     }
 
-    private static void EnsureNoError(int status, string op)
+    private T? TryGet<T>(string export) where T : Delegate
+    {
+      try
+      {
+        var ptr = NativeLibrary.GetExport(_lib, export);
+        return Marshal.GetDelegateForFunctionPointer<T>(ptr);
+      }
+      catch
+      {
+        return null;
+      }
+    }
+
+    private void EnsureNoError(int status, string op)
     {
       if (status == 0) return;
+      var last = TryGetLastError();
+      if (!string.IsNullOrWhiteSpace(last))
+      {
+        throw new InvalidOperationException($"{op} a échoué (code {status}) - {last}");
+      }
       throw new InvalidOperationException($"{op} a échoué (code {status})");
+    }
+
+    private string? TryGetLastError()
+    {
+      if (_getLastError is null) return null;
+      var buf = new string('\0', 256);
+      var sb = new StringBuilder(256);
+      try
+      {
+        _getLastError(sb);
+        var s = sb.ToString().Trim();
+        return string.IsNullOrWhiteSpace(s) ? null : s;
+      }
+      catch
+      {
+        return null;
+      }
     }
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
@@ -623,6 +680,9 @@ static class Program
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int PassThruIoctlDelegate(uint channelId, uint ioctlId, nint pInput, nint pOutput);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall, CharSet = CharSet.Ansi)]
+    private delegate int PassThruGetLastErrorDelegate(StringBuilder pErrorDescription);
   }
 
   private sealed class BridgeRequest
